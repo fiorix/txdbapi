@@ -1,0 +1,28 @@
+language: python
+python:
+    - 2.5
+    - 2.6
+    - 2.7
+notifications:
+    irc:
+        - "irc.freenode.org#cycloneweb"
+install:
+    - if [[ $TRAVIS_PYTHON_VERSION == '2.5' ]]; then pip install --use-mirrors twisted==11.0.0 'zope.interface<4.0'; fi
+    - pip install --use-mirrors mysql-python psycopg2
+
+before_script:
+    - mysql -e 'create database test;'
+    - psql -c 'create database postgres;' -U postgres
+
+mysql:
+    adapter: mysql12
+    database: test
+    username: root
+    encoding: utf8
+
+postgres:
+    adapter: postgresql
+    database: postgres
+    username: postgres
+
+script: trial tests/
