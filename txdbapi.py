@@ -1,6 +1,8 @@
 # coding: utf-8
 
 import sqlite3
+import sys
+
 from twisted.enterprise import adbapi
 from twisted.internet import defer
 from UserDict import UserDict
@@ -44,7 +46,18 @@ class InlineSQLite:
 
 def ConnectionPool(dbapiName, *args, **kwargs):
     if dbapiName == "sqlite3":
-        kwargs["cursorclass"] = sqlite3.Row
+        if sys.version_info < (2, 6):
+            # hax for py2.5
+            def __row(cursor, row):
+                d = {}
+                for idx, col in enumerate(cursor.description):
+                    d[col[0]] = row[idx]
+                return d
+
+            kwargs["cursorclass"] = __row
+        else:
+            kwargs["cursorclass"] = sqlite3.Row
+
         return InlineSQLite(*args, **kwargs)
 
     elif dbapiName == "MySQLdb":
@@ -136,7 +149,10 @@ class DatabaseMixin(UserDict):
             rs = yield cls.db.runQuery("select %s from %s %s" %
                                        (star, cls.__name__, extra))
 
-        result = map(cls, rs)
+        if isinstance(cls.db, InlineSQLite):
+            result = map(lambda row: cls(dict(row)), rs)
+        else:
+            result = map(cls, rs)
         defer.returnValue(result[0] if kwargs.get("limit") == 1 else result)
 
     @classmethod
