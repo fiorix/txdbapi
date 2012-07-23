@@ -50,6 +50,7 @@ and running. For testing a specific database, run
 ``trial ./tests/test_sqlite.py``, or ``test_mysql.py``, or
 ``test_postgres.py``.
 
+[![Build Status](https://secure.travis-ci.org/fiorix/txdbapi.png)](http://travis-ci.org/fiorix/txdbapi)
 
 Usage
 -----
