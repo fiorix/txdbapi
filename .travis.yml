@@ -12,7 +12,6 @@ install:
 
 before_script:
     - mysql -e 'create database test;'
-    - psql -c 'create database postgres;' -U postgres
 
 mysql:
     adapter: mysql12
