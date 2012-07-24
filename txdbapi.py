@@ -19,7 +19,7 @@ class InlineSQLite:
 
     def runQuery(self, query, *args, **kwargs):
         self.curs.execute(query.replace("%s", "?"), *args, **kwargs)
-        return [row for row in self.curs]
+        return self.curs.fetchall()
 
     def runOperation(self, command, *args, **kwargs):
         self.curs.execute(command.replace("%s", "?"), *args, **kwargs)
