@@ -149,10 +149,7 @@ class DatabaseMixin(UserDict):
             rs = yield cls.db.runQuery("select %s from %s %s" %
                                        (star, cls.__name__, extra))
 
-        if isinstance(cls.db, InlineSQLite):
-            result = map(lambda row: cls(dict(row)), rs)
-        else:
-            result = map(cls, rs)
+        result = map(cls, rs)
         defer.returnValue(result[0] if kwargs.get("limit") == 1 else result)
 
     @classmethod
