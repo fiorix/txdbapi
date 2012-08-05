@@ -1,11 +1,11 @@
 # coding: utf-8
+# http://en.wikipedia.org/wiki/Active_record_pattern
 
 import sqlite3
 import sys
 
 from twisted.enterprise import adbapi
 from twisted.internet import defer
-from UserDict import UserDict
 
 
 class InlineSQLite:
@@ -75,48 +75,126 @@ def ConnectionPool(dbapiName, *args, **kwargs):
         raise ValueError("Database %s is not yet supported." % dbapiName)
 
 
-class DatabaseMixin(UserDict):
-    db = None
-
-    def __init__(self, *args, **kwargs):
-        UserDict.__init__(self, *args, **kwargs)
-        self.exists = 1 if "id" in self else 0
-        self.changes = set()
-
-    def __setitem__(self, k, v):
-        if hasattr(self, "changes"):
-            self.changes.add(k)
-        UserDict.__setitem__(self, k, v)
-
-    def __getattr__(self, k):
-        try:
-            return self.__getitem__(k)
-        except:
-            return None
+class DatabaseObject(object):
+    def __init__(self, model, row):
+        self._model = model
+        self._changes = set()
+        self._data = dict(row)
 
     def __setattr__(self, k, v):
-        if k in ("changes", "data", "db", "exists"):
-            self.__dict__[k] = v
+        if k[0] == "_":
+            object.__setattr__(self, k, v)
         else:
-            self.__setitem__(k, v)
+            if k in self._data:
+                self._changes.add(k, v)
+
+            self._data[k] = v
+
+    def __getattr__(self, k):
+        if [0] == "_":
+            object.__getattr__(self, k)
+        else:
+            return self._data[k]
+
+    def __setitem__(self, k, v):
+        self.__setattr__(self, k, v)
+
+    def __getitem__(self, k):
+        return self.__getattr__(k)
+
+    def get(self, k, default=None):
+        return self._data.get(k, default)
+
+    @defer.inlineCallbacks
+    def save(self, force=False):
+        if self._changes or force:
+            v = []
+            q = ["update %s set" % self._model.__name__]
+            for k in self.changes:
+                q.append("%s=%s" % (k, "%s"))
+                v.append(self._data[k])
+
+            self._changes.clear()
+            q.append("where id=%s" % self._data["id"])
+            yield self._model.db.runOperation(" ".join(q), v)
+            defer.returnValue(self)
+
+    def __repr__(self):
+        return repr(self._data)
+
+
+class DatabaseModel(object):
+    db = None
+    allow = []
+    deny = []
 
     @classmethod
     @defer.inlineCallbacks
-    def count(cls, **kwargs):
-        if "where" in kwargs:
-            where, args = kwargs["where"][0], kwargs["where"][1:]
-            rs = yield cls.db.runQuery("select count(*) as count from %s"
-                                       "where %s" %
-                                       (cls.__name__, where), args)
-        else:
-            rs = yield cls.db.runQuery("select count(*) as count from %s" %
-                                       cls.__name__)
+    def insert(cls, **kwargs):
+        if cls.allow:
+            cls.deny += [k for k in kwargs if k not in cls.allow]
 
-        defer.returnValue(rs[0]["count"])
+        if cls.deny:
+            map(lambda k: kwargs.pop(k, None), cls.deny)
+
+        keys = kwargs.keys()
+        q = "insert into %s (%s) values " % (cls.__name__,
+                                             ",".join(keys)) + "(%s)"
+
+        vs = []
+        vd = []
+        for v in kwargs.itervalues():
+            vs.append("%s")
+            vd.append(v["id"] if isinstance(v, DatabaseObject) else v)
+
+        if isinstance(cls.db, InlineSQLite):
+            vs = ["?"] * len(vs)
+
+        q = q % ",".join(vs)
+
+        if "id" in kwargs:
+            yield cls.db.runOperation(q, vd)
+        else:
+            def _insert_transaction(trans, *args, **kwargs):
+                trans.execute(*args, **kwargs)
+                if isinstance(cls.db, InlineSQLite):
+                    trans.execute("select last_insert_rowid() as id")
+                elif cls.db.dbapiName == "MySQLdb":
+                    trans.execute("select last_insert_id() as id")
+                elif cls.db.dbapiName == "psycopg2":
+                    trans.execute("select currval('%s_id_seq') as id" %
+                                  cls.__name__)
+                return trans.fetchall()
+
+            r = yield cls.db.runInteraction(_insert_transaction, q, vd)
+            kwargs["id"] = r[0]["id"]
+
+        defer.returnValue(DatabaseObject(cls, kwargs))
+
+    @classmethod
+    def update(cls, row):
+        assert row.get("id") is not None, "This object does not have an id."
+        assert row._table == cls.__name__, "This object does not belong here."
+        return row.save()
 
     @classmethod
     @defer.inlineCallbacks
-    def find(cls, **kwargs):
+    def upsert(cls, **kwargs):
+        obj = None
+        if "id" in kwargs:
+            r = yield cls.select(where=("id=%s", kwargs["id"]), limit=1)
+            if r:
+                obj = DatabaseObject(cls, kwargs)
+                yield obj.save(force=True)
+
+        if obj is None:
+            obj = yield cls.insert(**kwargs)
+
+        defer.returnValue(obj)
+
+    @classmethod
+    @defer.inlineCallbacks
+    def select(cls, **kwargs):
         extra = []
         star = "id,*" if isinstance(cls.db, InlineSQLite) else "*"
 
@@ -141,7 +219,11 @@ class DatabaseMixin(UserDict):
         extra = " ".join(extra)
 
         if "where" in kwargs:
-            where, args = kwargs["where"][0], kwargs["where"][1:]
+            where, args = kwargs["where"][0], list(kwargs["where"][1:])
+            for n, arg in enumerate(args):
+                if isinstance(arg, DatabaseObject):
+                    args[n] = arg["id"]
+
             rs = yield cls.db.runQuery("select %s from %s where %s %s" %
                                        (star, cls.__name__, where, extra),
                                        args)
@@ -149,72 +231,104 @@ class DatabaseMixin(UserDict):
             rs = yield cls.db.runQuery("select %s from %s %s" %
                                        (star, cls.__name__, extra))
 
-        result = map(cls, rs)
+        result = map(lambda d: DatabaseObject(cls, d), rs)
         defer.returnValue(result[0] if kwargs.get("limit") == 1 else result)
 
     @classmethod
     def all(cls):
-        return cls.find()
+        return cls.select()
 
-    @defer.inlineCallbacks
-    def delete(self):
-        assert self.get("id"), "This object has not been saved yet."
-        yield self.db.runOperation("delete from %s where id=%s" %
-                                   (self.__class__.__name__, self["id"]))
-        self.changes.clear()
-        self.exists = 0
-        defer.returnValue(self.pop("id"))
+    @classmethod
+    def find(cls, **kwargs):
+        return cls.select(**kwargs)
 
-    @defer.inlineCallbacks
-    def save(self, force_update=False):
-        if force_update:
-            self.exists = 1
+    @classmethod
+    def find_first(cls, **kwargs):
+        kwargs["limit"] = 1
+        return cls.select(**kwargs)
 
-        if self.exists:
-            if not self.changes:
-                raise ValueError("No changes to commit")
-
-            v = []
-            q = ["update %s set" % self.__class__.__name__]
-            for k in self.changes:
-                q.append("%s=%s" % (k, "%s"))
-                v.append(self[k])
-
-            self.changes.clear()
-            q.append("where id=%s" % self["id"])
-            yield self.db.runOperation(" ".join(q), v)
-            defer.returnValue(self["id"])
-
+    @classmethod
+    def delete(cls, **kwargs):
+        if "where" in kwargs:
+            where, args = kwargs["where"][0], kwargs["where"][1:]
+            return cls.db.runQuery("delete from %s where %s" %
+                                   (cls.__name__, where), args)
         else:
-            keys = self.keys()
-            q = "insert into %s (%s) values " % (self.__class__.__name__,
-                                                 ",".join(keys)) + "(%s)"
+            return cls.db.runQuery("delete from %s" % cls.__name__)
 
-            vs = []
-            vb = []
-            for k in keys:
-                vs.append("%s")
-                vb.append(self[k])
+    @classmethod
+    @defer.inlineCallbacks
+    def count(cls, **kwargs):
+        if "where" in kwargs:
+            where, args = kwargs["where"][0], kwargs["where"][1:]
+            rs = yield cls.db.runQuery("select count(*) as count from %s"
+                                       "where %s" %
+                                       (cls.__name__, where), args)
+        else:
+            rs = yield cls.db.runQuery("select count(*) as count from %s" %
+                                       cls.__name__)
 
-            if isinstance(self.db, InlineSQLite):
-                vs = ["?"] * len(vs)
-            r = yield self.db.runInteraction(self._insert_transaction,
-                                             q % ",".join(vs), vb)
+        defer.returnValue(rs[0]["count"])
 
-            self["id"] = r[0]["id"]
-            self.exists = 1
-            defer.returnValue(self["id"])
+#    @defer.inlineCallbacks
+#    def delete(self):
+#        assert self.get("id"), "This object has not been saved yet."
+#        yield self.db.runOperation("delete from %s where id=%s" %
+#                                   (self.__class__.__name__, self["id"]))
+#        self.changes.clear()
+#        self.exists = 0
+#        defer.returnValue(self.pop("id"))
 
-    def _insert_transaction(self, trans, *args, **kwargs):
-        trans.execute(*args, **kwargs)
-        if isinstance(self.db, InlineSQLite):
-            trans.execute("select last_insert_rowid() as id")
-        elif self.db.dbapiName == "MySQLdb":
-            trans.execute("select last_insert_id() as id")
-        elif self.db.dbapiName == "psycopg2":
-            trans.execute("select currval('%s_id_seq') as id" %
-                          self.__class__.__name__)
-        return trans.fetchall()
+#    @defer.inlineCallbacks
+#    def save(self, force_update=False):
+#        if force_update:
+#            self.exists = 1
+#
+#        if self.exists:
+#            if not self.changes:
+#                raise ValueError("No changes to commit")
+#
+#            v = []
+#            q = ["update %s set" % self.__class__.__name__]
+#            for k in self.changes:
+#                q.append("%s=%s" % (k, "%s"))
+#                v.append(self[k])
+#
+#            self.changes.clear()
+#            q.append("where id=%s" % self["id"])
+#            yield self.db.runOperation(" ".join(q), v)
+#            defer.returnValue(self["id"])
+#
+#        else:
+#            keys = self.keys()
+#            q = "insert into %s (%s) values " % (self.__class__.__name__,
+#                                                 ",".join(keys)) + "(%s)"
+#
+#            vs = []
+#            vb = []
+#            for k in keys:
+#                vs.append("%s")
+#                vb.append(self[k])
+#
+#            if isinstance(self.db, InlineSQLite):
+#                vs = ["?"] * len(vs)
+#            r = yield self.db.runInteraction(self._insert_transaction,
+#                                             q % ",".join(vs), vb)
+#
+#            self["id"] = r[0]["id"]
+#            self.exists = 1
+#            defer.returnValue(self["id"])
+#
+#    def _insert_transaction(self, trans, *args, **kwargs):
+#        trans.execute(*args, **kwargs)
+#        if isinstance(self.db, InlineSQLite):
+#            trans.execute("select last_insert_rowid() as id")
+#        elif self.db.dbapiName == "MySQLdb":
+#            trans.execute("select last_insert_id() as id")
+#        elif self.db.dbapiName == "psycopg2":
+#            trans.execute("select currval('%s_id_seq') as id" %
+#                          self.__class__.__name__)
+#        return trans.fetchall()
 
     def __str__(self):
-        return repr(self)
+        return str(self.data)

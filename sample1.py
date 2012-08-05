@@ -7,7 +7,7 @@ from twisted.internet import defer
 from twisted.internet import reactor
 
 
-class Model(txdbapi.DatabaseMixin):
+class Model(txdbapi.DatabaseModel):
     db = txdbapi.ConnectionPool("sqlite3", ":memory:")
 
     @classmethod
