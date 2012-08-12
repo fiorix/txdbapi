@@ -51,10 +51,9 @@ def main():
     print "new user=", repr(newuser)
 
     usercount = yield users.count()
-    print "users=", repr(usercount)
+    print "%d users found" % usercount
 
     iphone_users = yield users.find(where=("phone=%s", iphone))
-
     for user in iphone_users:
         print user
 

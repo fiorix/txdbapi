@@ -26,10 +26,10 @@ class asd(Model):
 def main():
     yield Model.setup()
 
-    obj = asd(name="foo", age=10)
+    obj = asd.new(name="foo", age=10)
     yield obj.save()
 
-    obj = asd(name="bar", age=11)
+    obj = asd.new(name="bar", age=11)
     yield obj.save()
 
     nobjs = yield asd.count()

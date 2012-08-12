@@ -105,28 +105,35 @@ class DatabaseObject(object):
     def get(self, k, default=None):
         return self._data.get(k, default)
 
-    @defer.inlineCallbacks
     def save(self, force=False):
-        if self._changes or force:
-            v = []
-            q = ["update %s set" % self._model.__name__]
-            for k in self.changes:
-                q.append("%s=%s" % (k, "%s"))
-                v.append(self._data[k])
+        if "id" in self._data:
+            if self._changes and not force:
+                k = ["%s=%s" % (n, "%s") for n in self._changes]
+                v = [self._data[n] for n in self._changes]
+                self._model.update(set=(k, v),
+                                   where=("id=%s", self._data["id"]))
+            elif force:
+                k, v = self._data.items()
+                self._model.update(set=(k, v),
+                                   where=("id=%s", self._data["id"]))
 
             self._changes.clear()
-            q.append("where id=%s" % self._data["id"])
-            yield self._model.db.runOperation(" ".join(q), v)
-            defer.returnValue(self)
+            return self
+        else:
+            return self._model.insert(**self._data)
 
     def __repr__(self):
         return repr(self._data)
 
 
-class DatabaseModel(object):
+class DatabaseCRUD(object):
     db = None
     allow = []
     deny = []
+
+    @classmethod
+    def __table__(cls):
+        return getattr(cls, "table_name", cls.__name__)
 
     @classmethod
     @defer.inlineCallbacks
@@ -138,7 +145,7 @@ class DatabaseModel(object):
             map(lambda k: kwargs.pop(k, None), cls.deny)
 
         keys = kwargs.keys()
-        q = "insert into %s (%s) values " % (cls.__name__,
+        q = "insert into %s (%s) values " % (cls.__table__(),
                                              ",".join(keys)) + "(%s)"
 
         vs = []
@@ -163,7 +170,7 @@ class DatabaseModel(object):
                     trans.execute("select last_insert_id() as id")
                 elif cls.db.dbapiName == "psycopg2":
                     trans.execute("select currval('%s_id_seq') as id" %
-                                  cls.__name__)
+                                  cls.__table__())
                 return trans.fetchall()
 
             r = yield cls.db.runInteraction(_insert_transaction, q, vd)
@@ -172,25 +179,26 @@ class DatabaseModel(object):
         defer.returnValue(DatabaseObject(cls, kwargs))
 
     @classmethod
-    def update(cls, row):
-        assert row.get("id") is not None, "This object does not have an id."
-        assert row._table == cls.__name__, "This object does not belong here."
-        return row.save()
+    def update(cls, **kwargs):
+        where = kwargs.pop("where", None)
 
-    @classmethod
-    @defer.inlineCallbacks
-    def upsert(cls, **kwargs):
-        obj = None
-        if "id" in kwargs:
-            r = yield cls.select(where=("id=%s", kwargs["id"]), limit=1)
-            if r:
-                obj = DatabaseObject(cls, kwargs)
-                yield obj.save(force=True)
+        keys = kwargs.keys()
+        vals = [kwargs[k] for k in keys]
+        keys = ",".join(["%s=%s" % (k, "%s") for k in keys])
 
-        if obj is None:
-            obj = yield cls.insert(**kwargs)
+        if where:
+            where, args = where[0], list(where[1:])
+            for arg in args:
+                if isinstance(arg, DatabaseObject):
+                    vals.append(arg["id"])
+                else:
+                    vals.append(arg)
 
-        defer.returnValue(obj)
+            return cls.db.runOperation("update %s set %s where %s" %
+                                       (cls.__table__(), keys, where), vals)
+        else:
+            return cls.db.runOperation("update %s set %s" %
+                                       (cls.__table__(), keys), vals)
 
     @classmethod
     @defer.inlineCallbacks
@@ -225,15 +233,43 @@ class DatabaseModel(object):
                     args[n] = arg["id"]
 
             rs = yield cls.db.runQuery("select %s from %s where %s %s" %
-                                       (star, cls.__name__, where, extra),
+                                       (star, cls.__table__(), where, extra),
                                        args)
         else:
             rs = yield cls.db.runQuery("select %s from %s %s" %
-                                       (star, cls.__name__, extra))
+                                       (star, cls.__table__(), extra))
 
         result = map(lambda d: DatabaseObject(cls, d), rs)
-        defer.returnValue(result[0] if kwargs.get("limit") == 1 else result)
+        defer.returnValue(result)
 
+    @classmethod
+    def delete(cls, **kwargs):
+        if "where" in kwargs:
+            where, args = kwargs["where"][0], kwargs["where"][1:]
+            return cls.db.runQuery("delete from %s where %s" %
+                                   (cls.__table__(), where), args)
+        else:
+            return cls.db.runQuery("delete from %s" % cls.__table__())
+
+    @classmethod
+    @defer.inlineCallbacks
+    def count(cls, **kwargs):
+        if "where" in kwargs:
+            where, args = kwargs["where"][0], kwargs["where"][1:]
+            rs = yield cls.db.runQuery("select count(*) as count from %s"
+                                       "where %s" %
+                                       (cls.__table__(), where), args)
+        else:
+            rs = yield cls.db.runQuery("select count(*) as count from %s" %
+                                       cls.__table__())
+
+        defer.returnValue(rs[0]["count"])
+
+    def __str__(self):
+        return str(self.data)
+
+
+class DatabaseModel(DatabaseCRUD):
     @classmethod
     def all(cls):
         return cls.select()
@@ -243,92 +279,12 @@ class DatabaseModel(object):
         return cls.select(**kwargs)
 
     @classmethod
+    @defer.inlineCallbacks
     def find_first(cls, **kwargs):
         kwargs["limit"] = 1
-        return cls.select(**kwargs)
+        rs = yield cls.select(**kwargs)
+        defer.returnValue(rs[0] if rs else None)
 
     @classmethod
-    def delete(cls, **kwargs):
-        if "where" in kwargs:
-            where, args = kwargs["where"][0], kwargs["where"][1:]
-            return cls.db.runQuery("delete from %s where %s" %
-                                   (cls.__name__, where), args)
-        else:
-            return cls.db.runQuery("delete from %s" % cls.__name__)
-
-    @classmethod
-    @defer.inlineCallbacks
-    def count(cls, **kwargs):
-        if "where" in kwargs:
-            where, args = kwargs["where"][0], kwargs["where"][1:]
-            rs = yield cls.db.runQuery("select count(*) as count from %s"
-                                       "where %s" %
-                                       (cls.__name__, where), args)
-        else:
-            rs = yield cls.db.runQuery("select count(*) as count from %s" %
-                                       cls.__name__)
-
-        defer.returnValue(rs[0]["count"])
-
-#    @defer.inlineCallbacks
-#    def delete(self):
-#        assert self.get("id"), "This object has not been saved yet."
-#        yield self.db.runOperation("delete from %s where id=%s" %
-#                                   (self.__class__.__name__, self["id"]))
-#        self.changes.clear()
-#        self.exists = 0
-#        defer.returnValue(self.pop("id"))
-
-#    @defer.inlineCallbacks
-#    def save(self, force_update=False):
-#        if force_update:
-#            self.exists = 1
-#
-#        if self.exists:
-#            if not self.changes:
-#                raise ValueError("No changes to commit")
-#
-#            v = []
-#            q = ["update %s set" % self.__class__.__name__]
-#            for k in self.changes:
-#                q.append("%s=%s" % (k, "%s"))
-#                v.append(self[k])
-#
-#            self.changes.clear()
-#            q.append("where id=%s" % self["id"])
-#            yield self.db.runOperation(" ".join(q), v)
-#            defer.returnValue(self["id"])
-#
-#        else:
-#            keys = self.keys()
-#            q = "insert into %s (%s) values " % (self.__class__.__name__,
-#                                                 ",".join(keys)) + "(%s)"
-#
-#            vs = []
-#            vb = []
-#            for k in keys:
-#                vs.append("%s")
-#                vb.append(self[k])
-#
-#            if isinstance(self.db, InlineSQLite):
-#                vs = ["?"] * len(vs)
-#            r = yield self.db.runInteraction(self._insert_transaction,
-#                                             q % ",".join(vs), vb)
-#
-#            self["id"] = r[0]["id"]
-#            self.exists = 1
-#            defer.returnValue(self["id"])
-#
-#    def _insert_transaction(self, trans, *args, **kwargs):
-#        trans.execute(*args, **kwargs)
-#        if isinstance(self.db, InlineSQLite):
-#            trans.execute("select last_insert_rowid() as id")
-#        elif self.db.dbapiName == "MySQLdb":
-#            trans.execute("select last_insert_id() as id")
-#        elif self.db.dbapiName == "psycopg2":
-#            trans.execute("select currval('%s_id_seq') as id" %
-#                          self.__class__.__name__)
-#        return trans.fetchall()
-
-    def __str__(self):
-        return str(self.data)
+    def new(cls, **kwargs):
+        return DatabaseObject(cls, kwargs)
