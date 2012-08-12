@@ -9,59 +9,69 @@ from twisted.trial import unittest
 base.DelayedCall.debug = False
 
 
-class Model(txdbapi.DatabaseMixin):
+class BaseModel(txdbapi.DatabaseModel):
     db = txdbapi.ConnectionPool("sqlite3", ":memory:")
 
     @classmethod
     @defer.inlineCallbacks
     def setup(cls):
-        yield Model.db.runOperation(
+        yield BaseModel.db.runOperation(
             "create table asd "
             "(id integer primary key autoincrement, age int, name text)")
 
 
-class asd(Model):
+class asd(BaseModel):
     pass
 
 
-class TestSQLite(unittest.TestCase):
+class Test_SQLite(unittest.TestCase):
     @defer.inlineCallbacks
-    def test_basic(self):
-        yield Model.setup()
-
-        obj = asd(name="foo", age=10)
-        yield obj.save()
-
-        obj = asd(name="bar", age=11)
-        yield obj.save()
-
-        rs = yield asd.all()
-
-        obj1 = rs[0]
-        self.assertEqual(obj1.id, 1)
-        self.assertEqual(obj1.age, 10)
-        self.assertEqual(obj1.name, "foo")
-
-        obj2 = rs[1]
-        self.assertEqual(obj2.id, 2)
-        self.assertEqual(obj2.age, 11)
-        self.assertEqual(obj2.name, "bar")
+    def test_01_setup(self):
+        yield BaseModel.setup()
 
     @defer.inlineCallbacks
-    def test_count(self):
+    def test_02_crud_insert(self):
+        foo = yield asd.insert(name="foo", age=10)
+        self.assertEqual(foo.id, 1)
+
+        bar = yield asd.insert(name="bar", age=10)
+        self.assertEqual(bar.id, 2)
+
+    @defer.inlineCallbacks
+    def test_03_crud_update(self):
+        yield asd.update(age=20, where=("name=%s", "foo"))
+        objs = yield asd.select(where=("name=%s", "foo"))
+        foo = objs[0]
+        self.assertEqual(foo.id, 1)
+        self.assertEqual(foo.age, 20)
+
+    def test_04_crud_select(self):
+        foo = yield asd.select(where=("name=%s and age=%s", "foo", 20))
+        self.assertEqual(foo.id, 1)
+
+    def test_05_crud_delete(self):
+        yield asd.delete(where=("name=%s", "bar"))
+        objs = yield asd.select()
+        self.assertEqual(len(objs), 1)
+
+    def test_06_model_new(self):
+        bar = yield asd.new(name="bar", age=10)
+        yield bar.save()
+        self.assertEqual(bar.id, 3)
+
+    def test_07_model_all(self):
+        objs = yield asd.all()
+        self.assertEqual(len(objs), 2)
+
+    @defer.inlineCallbacks
+    def test_08_model_count(self):
         nobjs = yield asd.count()
         self.assertEqual(nobjs, 2)
 
-    @defer.inlineCallbacks
-    def test_query1(self):
-        obj = yield asd.find(where=("name=%s", "foo"), limit=1)
-        self.assertEqual(obj.id, 1)
-        self.assertEqual(obj.age, 10)
-        self.assertEqual(obj.name, "foo")
+    def test_09_model_find(self):
+        objs = yield asd.find(where=("name=%s", "foo"))
+        self.assertEqual(objs[0].id, 1)
 
-    @defer.inlineCallbacks
-    def test_query2(self):
-        obj = yield asd.find(where=("name=%s", "bar"), limit=1)
-        self.assertEqual(obj.id, 2)
-        self.assertEqual(obj.age, 11)
-        self.assertEqual(obj.name, "bar")
+    def test_10_model_find_first(self):
+        bar = yield asd.find_first(where=("name=%s", "bar"))
+        self.assertEqual(bar.id, 3)

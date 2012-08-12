@@ -1,5 +1,6 @@
 # coding: utf-8
 # http://en.wikipedia.org/wiki/Active_record_pattern
+# http://en.wikipedia.org/wiki/Create,_read,_update_and_delete
 
 import sqlite3
 import sys
@@ -86,7 +87,7 @@ class DatabaseObject(object):
             object.__setattr__(self, k, v)
         else:
             if k in self._data:
-                self._changes.add(k, v)
+                self._changes.add(k)
 
             self._data[k] = v
 
@@ -97,7 +98,7 @@ class DatabaseObject(object):
             return self._data[k]
 
     def __setitem__(self, k, v):
-        self.__setattr__(self, k, v)
+        self.__setattr__(k, v)
 
     def __getitem__(self, k):
         return self.__getattr__(k)
@@ -105,22 +106,24 @@ class DatabaseObject(object):
     def get(self, k, default=None):
         return self._data.get(k, default)
 
+    @defer.inlineCallbacks
     def save(self, force=False):
         if "id" in self._data:
             if self._changes and not force:
-                k = ["%s=%s" % (n, "%s") for n in self._changes]
-                v = [self._data[n] for n in self._changes]
-                self._model.update(set=(k, v),
-                                   where=("id=%s", self._data["id"]))
+                kv = dict(map(lambda k: (k, self._data[k]), self._changes))
+                kv["where"] = ("id=%s", self._data["id"])
+                yield self._model.update(**kv)
             elif force:
                 k, v = self._data.items()
-                self._model.update(set=(k, v),
-                                   where=("id=%s", self._data["id"]))
+                yield self._model.update(set=(k, v),
+                                         where=("id=%s", self._data["id"]))
 
             self._changes.clear()
-            return self
+            defer.returnValue(self)
         else:
-            return self._model.insert(**self._data)
+            rs = yield self._model.insert(**self._data)
+            self["id"] = rs["id"]
+            defer.returnValue(self)
 
     def __repr__(self):
         return repr(self._data)
@@ -246,11 +249,16 @@ class DatabaseCRUD(object):
     def delete(cls, **kwargs):
         if "where" in kwargs:
             where, args = kwargs["where"][0], kwargs["where"][1:]
-            return cls.db.runQuery("delete from %s where %s" %
-                                   (cls.__table__(), where), args)
+            cls.db.runOperation("delete from %s where %s" %
+                                (cls.__table__(), where), args)
         else:
-            return cls.db.runQuery("delete from %s" % cls.__table__())
+            cls.db.runOperation("delete from %s" % cls.__table__())
 
+    def __str__(self):
+        return str(self.data)
+
+
+class DatabaseModel(DatabaseCRUD):
     @classmethod
     @defer.inlineCallbacks
     def count(cls, **kwargs):
@@ -265,11 +273,6 @@ class DatabaseCRUD(object):
 
         defer.returnValue(rs[0]["count"])
 
-    def __str__(self):
-        return str(self.data)
-
-
-class DatabaseModel(DatabaseCRUD):
     @classmethod
     def all(cls):
         return cls.select()

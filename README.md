@@ -57,42 +57,55 @@ Usage
 
 For now, all we have is this simple hello world:
 
+    #!/usr/bin/env python
+    # coding: utf-8
+
     import txdbapi
 
     from twisted.internet import defer
     from twisted.internet import reactor
 
 
-    class Model(txdbapi.DatabaseMixin):
+    class BaseModel(txdbapi.DatabaseModel):
         db = txdbapi.ConnectionPool("sqlite3", ":memory:")
 
         @classmethod
         @defer.inlineCallbacks
         def setup(cls):
-            yield Model.db.runOperation(
+            yield BaseModel.db.runOperation(
                 "create table asd "
                 "(id integer primary key autoincrement, age int, name text)")
 
 
-    class asd(Model):
+    class asd(BaseModel):
         pass
 
 
     @defer.inlineCallbacks
     def main():
-        yield Model.setup()
+        yield BaseModel.setup()
 
-        obj = asd(name="foo", age=10)
-        yield obj.save()
+        # create foo
+        foo = asd.new(name="foo", age=10)
+        yield foo.save()
+        print "foo=", foo
 
-        obj = asd(name="bar", age=11)
-        yield obj.save()
+        # create bar
+        bar = asd.new()
+        bar.name = "bar"
+        bar.age = 11
+        yield bar.save()
+        print "bar=", bar
 
+        # count
         nobjs = yield asd.count()
-        print "objects:", nobjs
+        print "nobjs:", nobjs
 
-        for name in ("foo", "bar"):
-            obj = yield asd.find(where=("name=%s", name), limit=1)
+        # query and update
+        objs = yield asd.find(where=("name in (%s, %s)", "foo", "bar"))
+        for obj in objs:
+            obj.age += 10
+            yield obj.save()
             print obj
 
         reactor.stop()
@@ -101,6 +114,3 @@ For now, all we have is this simple hello world:
     if __name__ == "__main__":
         reactor.callWhenRunning(main)
         reactor.run()
-
-
-And it works. :)
