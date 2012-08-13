@@ -46,20 +46,24 @@ class Test_MySQL(unittest.TestCase):
         self.assertEqual(foo.id, 1)
         self.assertEqual(foo.age, 20)
 
+    @defer.inlineCallbacks
     def test_04_crud_select(self):
         foo = yield asd.select(where=("name=%s and age=%s", "foo", 20))
-        self.assertEqual(foo.id, 1)
+        self.assertEqual(foo[0].id, 1)
 
+    @defer.inlineCallbacks
     def test_05_crud_delete(self):
         yield asd.delete(where=("name=%s", "bar"))
         objs = yield asd.select()
         self.assertEqual(len(objs), 1)
 
+    @defer.inlineCallbacks
     def test_06_model_new(self):
         bar = yield asd.new(name="bar", age=10)
         yield bar.save()
         self.assertEqual(bar.id, 3)
 
+    @defer.inlineCallbacks
     def test_07_model_all(self):
         objs = yield asd.all()
         self.assertEqual(len(objs), 2)
@@ -69,10 +73,21 @@ class Test_MySQL(unittest.TestCase):
         nobjs = yield asd.count()
         self.assertEqual(nobjs, 2)
 
+    @defer.inlineCallbacks
     def test_09_model_find(self):
         objs = yield asd.find(where=("name=%s", "foo"))
         self.assertEqual(objs[0].id, 1)
 
+    @defer.inlineCallbacks
     def test_10_model_find_first(self):
         bar = yield asd.find_first(where=("name=%s", "bar"))
         self.assertEqual(bar.id, 3)
+
+    @defer.inlineCallbacks
+    def test_11_model_delete(self):
+        bar = yield asd.find_first(where=("name=%s", "bar"))
+        self.assertEqual(bar.id, 3)
+        yield bar.delete()
+
+        obj = yield asd.find_first(where=("name=%s", "bar"))
+        self.assertEqual(obj, None)
