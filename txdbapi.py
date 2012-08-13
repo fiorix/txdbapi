@@ -4,6 +4,7 @@
 
 import sqlite3
 import sys
+import types
 
 from twisted.enterprise import adbapi
 from twisted.internet import defer
@@ -80,7 +81,9 @@ class DatabaseObject(object):
     def __init__(self, model, row):
         self._model = model
         self._changes = set()
-        self._data = dict(row)
+        self._data = {}
+        for k, v in dict(row).items():
+            self.__setattr__(k, v)
 
     def __setattr__(self, k, v):
         if k[0] == "_":
@@ -89,13 +92,18 @@ class DatabaseObject(object):
             if k in self._data:
                 self._changes.add(k)
 
-            self._data[k] = v
+            if k in self._model.codecs and \
+                    not isinstance(v, types.StringTypes):
+                self._data[k] = self._model.codecs[k][0](v)
+            else:
+                self._data[k] = v
 
     def __getattr__(self, k):
         if [0] == "_":
             object.__getattr__(self, k)
         else:
-            return self._data[k]
+            return self._model.codecs[k][1](self._data[k]) \
+                   if k in self._model.codecs else self._data[k]
 
     def __setitem__(self, k, v):
         self.__setattr__(k, v)
@@ -133,19 +141,28 @@ class DatabaseCRUD(object):
     db = None
     allow = []
     deny = []
+    codecs = {}
 
     @classmethod
     def __table__(cls):
         return getattr(cls, "table_name", cls.__name__)
 
     @classmethod
+    def kwargs_cleanup(cls, kwargs):
+        if cls.allow:
+            deny = cls.deny + [k for k in kwargs if k not in cls.allow]
+        else:
+            deny = cls.deny
+
+        if deny:
+            map(lambda k: kwargs.pop(k, None), deny)
+
+        return kwargs
+
+    @classmethod
     @defer.inlineCallbacks
     def insert(cls, **kwargs):
-        if cls.allow:
-            cls.deny += [k for k in kwargs if k not in cls.allow]
-
-        if cls.deny:
-            map(lambda k: kwargs.pop(k, None), cls.deny)
+        kwargs = cls.kwargs_cleanup(kwargs)
 
         keys = kwargs.keys()
         q = "insert into %s (%s) values " % (cls.__table__(),
@@ -184,6 +201,7 @@ class DatabaseCRUD(object):
     @classmethod
     def update(cls, **kwargs):
         where = kwargs.pop("where", None)
+        kwargs = cls.kwargs_cleanup(kwargs)
 
         keys = kwargs.keys()
         vals = [kwargs[k] for k in keys]
