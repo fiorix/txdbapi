@@ -133,6 +133,14 @@ class DatabaseObject(object):
             self["id"] = rs["id"]
             defer.returnValue(self)
 
+    @defer.inlineCallbacks
+    def delete(self):
+        if "id" in self._data:
+            yield self._model.delete(where=("id=%s", self._data["id"]))
+            self._data.pop("id")
+
+        defer.returnValue(self)
+
     def __repr__(self):
         return repr(self._data)
 
@@ -267,10 +275,10 @@ class DatabaseCRUD(object):
     def delete(cls, **kwargs):
         if "where" in kwargs:
             where, args = kwargs["where"][0], kwargs["where"][1:]
-            cls.db.runOperation("delete from %s where %s" %
-                                (cls.__table__(), where), args)
+            return cls.db.runOperation("delete from %s where %s" %
+                                       (cls.__table__(), where), args)
         else:
-            cls.db.runOperation("delete from %s" % cls.__table__())
+            return cls.db.runOperation("delete from %s" % cls.__table__())
 
     def __str__(self):
         return str(self.data)
